@@ -1,7 +1,7 @@
 import pygame as pg
 import time
 import math
-from random import randint
+from random import randint, choice, uniform
 import numpy as np
 
 
@@ -48,7 +48,7 @@ class App:
         # other details
         self.gravity = 1
         self.speed = -3
-        self.dist = int(self.h / 3)
+        self.dist = int(self.h / 4)
         self.gap = int(self.h / 5)
         self.score = 0
         self.high_score = 0
@@ -56,12 +56,14 @@ class App:
         self.view_score = self.font.render(str(self.score), True, (255, 255, 255))
         self.view_hscore = self.font.render(str(self.high_score), True, (255, 255, 255))
 
+        self.score_flag = True
+
         self.bird_borders = {'top': -10, 'bot': self.images['bg'].get_height()}
 
         # create entity
-        self.bird = Bird(self)
         self.bg = BG(self)
         self.pipe = PipeCommander(self, self.w + 50, self.dist, gap=self.gap)
+        self.bird = BirdCommander(self, 30)
 
     def run(self):
 
@@ -70,8 +72,8 @@ class App:
             for i in events:
                 if i.type == pg.QUIT:
                     self.running = False
-                if i.type == pg.MOUSEBUTTONDOWN:
-                    self.bird.jump()
+
+            self.score_flag = True
 
             # updates
             self.bg.update()
@@ -97,6 +99,10 @@ class App:
         return self.pipe.coin(rect)
 
     def add_score(self):
+        if not self.score_flag:
+            return
+        self.score_flag = False
+
         self.score += 0.5
         self.view_score = self.font.render(str(math.floor(self.score)), True, (255, 255, 255))
         if self.score > self.high_score:
@@ -160,7 +166,7 @@ class Bird:
         self.r = min(self.rect.size)  # radius collider
         self.coin_flag = False
 
-    def update(self):
+    def update(self, *args, **kwargs):
         if not self.alive:
             self.app.reboot()
             return
@@ -221,20 +227,136 @@ class NeiroBird(Bird):
         self.parent = parent
         self.rating = 0
         self.neiro = Neiro(self.parent.neiro_params)
+        self.active_value = 0.5
 
-    def update(self):
-        super().update()
+        self.cross_f = np.vectorize(self.one_at_two)
+
+    def update(self, top_y, bot_y):
+        if not self.alive:
+            return
+        # gravity logic
+        self.speed_y += self.app.gravity
+        self.rect.top += self.speed_y
+
+        # ask to neiro
+        # prepare data
+        value1 = top_y - self.rect.centery
+        value2 = self.rect.centery - bot_y
+
+        # predict
+        result = self.neiro.predict([value1, value2])
+        if result[0] >= self.active_value:
+            self.jump()
+
+        # check border collide
+        if self.rect.bottom >= self.borders['bot']:
+            self.alive = False
+            return
+        elif self.rect.bottom <= self.borders['top']:
+            self.alive = False
+            return
+
+        # check pipe collide
+        if self.app.check_bird_collide(self.rect):
+            self.alive = False
+        self.coin_collide()
 
     def reboot(self):
         super().reboot()
         self.rating = 0
 
+    def coin_collide(self):
+        res = self.app.coin(self.rect)
+        if res != self.coin_flag:
+            self.app.add_score()
+            self.rating += 1
+        self.coin_flag = res
+
+    def draw(self, sc: pg.Surface):
+        if not self.alive:
+            return
+        super().draw(sc)
+
+    def cross_mutate(self, bird):
+        for i in range(len(self.neiro.weight)):
+            self.neiro.weight[i] = self.cross_f(self.neiro.weight[i], bird.neiro.weight[i])
+        self.mutate()
+
+    def mutate(self):
+        layer = randint(0, len(self.neiro.weight) - 1)
+        temp = self.neiro.weight[layer]
+        y = randint(0, len(temp) - 1)
+        x = randint(0, len(temp[0]) - 1)
+        temp[y][x] += uniform(-0.05, 0.05)
+
+    @staticmethod
+    def one_at_two(a, b):
+        return choice([a, b])
+
 
 class BirdCommander:
     def __init__(self, app, count):
         self.app = app
+        self.pipes = self.app.pipe
         self.count = count
         self.neiro_params = [2, 2, 1]
+
+        self.birds = [NeiroBird(self.app, self) for _ in range(self.count)]
+
+        self.age_timer = Timer(60).run()
+
+        # views
+        self.font = self.app.font
+        self.info = self.font.render('', False, (0, 0, 0))
+
+    def update(self):
+        # check age need
+        if not self.is_alive() or self.age_timer():
+
+            self.new_age()
+            self.app.reboot()
+            return
+
+        # default update logic
+        rect = self.birds[0].rect
+        top_y, bot_y = self.pipes.get_pipe_info(rect)
+        for bird in self.birds:
+            bird.update(top_y, bot_y)
+
+    def new_age(self):
+        self.birds = sorted(self.birds, key=lambda x: x.rating, reverse=True)
+        first = self.birds[0]
+        for i in self.birds[1:]:
+            flag = randint(0, 1)
+            if flag:
+                i.cross_mutate(first)
+            else:
+                i.mutate()
+
+    def draw(self, sc: pg.Surface):
+        for i in self.birds:
+            i.draw(sc)
+
+        lives = self.count_alive()
+        self.info = self.font.render(f'Alive: {lives}', True, (255, 255, 255))
+        sc.blit(self.info, (100, 10))
+
+    def reboot(self):
+        for i in self.birds:
+            i.reboot()
+
+    def is_alive(self):
+        for i in self.birds:
+            if i.alive:
+                return True
+        return False
+
+    def count_alive(self):
+        i = 0
+        for bird in self.birds:
+            if bird.alive:
+                i += 1
+        return i
 
 
 class Neiro:
@@ -319,6 +441,18 @@ class PipeCommander:
             temp = Pipe(self, self.start_pos + i * self.dist, randint(*self.random_borders), self.gap)
             self.pipes.append(temp)
 
+    def get_pipe_info(self, rect):
+        # find actual pipe
+        res = False
+        temp = None
+        for pipe in self.pipes:
+            res = pipe.actual(rect)
+            if res:
+                temp = pipe
+                break
+
+        return temp.top_rect.bottom, temp.bot_rect.top
+
     def coin(self, rect):
         flag = False
         for pipe in self.pipes:
@@ -381,6 +515,11 @@ class Pipe:
 
     def coin(self, rect):
         return self.coin_rect.colliderect(rect)
+
+    def actual(self, rect):
+        if rect.left > self.top_rect.right:
+            return False
+        return True
 
     def set_new_position(self, cx, cy):
         x = cx - int(self.top_rect.w / 2)
