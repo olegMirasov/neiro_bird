@@ -2,6 +2,7 @@ import pygame as pg
 import time
 import math
 from random import randint
+import numpy as np
 
 
 class Timer:
@@ -32,6 +33,7 @@ class Timer:
 
 class App:
     def __init__(self, w: int, h: int):
+        pg.init()
         self.w = w
         self.h = h
         self.screen = pg.display.set_mode((self.w, self.h))
@@ -48,33 +50,65 @@ class App:
         self.speed = -3
         self.dist = int(self.h / 3)
         self.gap = int(self.h / 5)
+        self.score = 0
+        self.high_score = 0
+        self.font = pg.font.Font(None, 32)
+        self.view_score = self.font.render(str(self.score), True, (255, 255, 255))
+        self.view_hscore = self.font.render(str(self.high_score), True, (255, 255, 255))
+
+        self.bird_borders = {'top': -10, 'bot': self.images['bg'].get_height()}
+
+        # create entity
+        self.bird = Bird(self)
+        self.bg = BG(self)
+        self.pipe = PipeCommander(self, self.w + 50, self.dist, gap=self.gap)
 
     def run(self):
-        bird = Bird(self)
-        bg = BG(self)
-        pipe = PipeCommander(self, self.w + 50, self.dist, gap=self.gap)
+
         while self.running:
             events = pg.event.get()
             for i in events:
                 if i.type == pg.QUIT:
                     self.running = False
                 if i.type == pg.MOUSEBUTTONDOWN:
-                    bird.jump()
+                    self.bird.jump()
 
             # updates
-            bg.update()
-            pipe.update()
-            bird.update()
+            self.bg.update()
+            self.pipe.update()
+            self.bird.update()
 
             # draws
-            self.screen.fill((255, 0, 0))
-            bg.bg.draw(self.screen)
-            pipe.draw(self.screen)
-            bg.ground.draw(self.screen)
-            bird.draw(self.screen)
+            # self.screen.fill((255, 0, 0))
+            self.bg.bg.draw(self.screen)
+            self.pipe.draw(self.screen)
+            self.bg.ground.draw(self.screen)
+            self.bird.draw(self.screen)
+            self.screen.blit(self.view_score, (10, 10))
+            self.screen.blit(self.view_hscore, (10, 50))
 
             pg.display.update()
             self.clock.tick(self.fps)
+
+    def check_bird_collide(self, rect):
+        return self.pipe.check_collision(rect)
+
+    def coin(self, rect):
+        return self.pipe.coin(rect)
+
+    def add_score(self):
+        self.score += 0.5
+        self.view_score = self.font.render(str(math.floor(self.score)), True, (255, 255, 255))
+        if self.score > self.high_score:
+            self.high_score = self.score
+            self.view_hscore = self.font.render(str(self.high_score), True, (255, 255, 255))
+
+    def reboot(self):
+        self.bird.reboot()
+        self.pipe.reboot()
+        self.bg.reboot()
+        self.score = 0
+        self.view_score = self.font.render(str(math.floor(self.score)), True, (255, 255, 255))
 
     def load_images(self):
         res = {'bg': pg.image.load('sourse/bg.bmp').convert(),
@@ -98,28 +132,167 @@ class App:
 class Bird:
     def __init__(self, app):
         self.app = app
-        self.surface = app.images['bird']  # pg.Surface((size, size))
+        self.image = app.images['bird']  # pg.Surface((size, size))
+        self.surface = pg.Surface((int(self.image.get_width() / 3), self.image.get_height())).convert_alpha()
         self.rect = self.surface.get_rect()
         self.speed_y = 0
         self.jump_force = 12
+        self.alive = True
+
+        # animation property
+        self.frame_count = 3
+        self.step = 0
+        self.anim_step = self.rect.w
+        self.anim_timer = Timer(0.1).run()
+
+        # first draw
+        self.surface.fill((0, 0, 0, 0))
+        self.surface.blit(self.image, (0, 0))
 
         # position bird
         x = self.app.w // 4
         y = self.app.h // 3
         self.rect.topleft = (x, y)
-
         self.jump_timer = Timer(0.1).run()
 
+        # other params
+        self.borders = self.app.bird_borders
+        self.r = min(self.rect.size)  # radius collider
+        self.coin_flag = False
+
     def update(self):
+        if not self.alive:
+            self.app.reboot()
+            return
         self.speed_y += self.app.gravity
         self.rect.top += self.speed_y
 
+        # check border collide
+        if self.rect.bottom >= self.borders['bot']:
+            self.alive = False
+            return
+        elif self.rect.bottom <= self.borders['top']:
+            self.alive = False
+            return
+
+        # check pipe collide
+        if self.app.check_bird_collide(self.rect):
+            self.alive = False
+        self.coin_collide()
+
     def draw(self, sc: pg.Surface):
+        self.animate()
         sc.blit(self.surface, self.rect)
+
+    def animate(self):
+        if self.anim_timer():
+            self.__next_step()
+
+            self.surface.fill((0, 0, 0, 0))
+            self.surface.blit(self.image, (-1 * self.step * self.anim_step, 0))
+
+    def __next_step(self):
+        self.step += 1
+        if self.step >= self.frame_count:
+            self.step = 0
 
     def jump(self):
         if self.jump_timer():
             self.speed_y = -self.jump_force
+
+    def reboot(self):
+        self.alive = True
+        self.speed_y = 0
+        x = self.app.w // 4
+        y = self.app.h // 3
+        self.rect.topleft = (x, y)
+        self.step = 0
+
+    def coin_collide(self):
+        res = self.app.coin(self.rect)
+        if res != self.coin_flag:
+            self.app.add_score()
+        self.coin_flag = res
+
+
+class NeiroBird(Bird):
+    def __init__(self, app, parent: 'BirdCommander'):
+        super().__init__(app)
+        self.parent = parent
+        self.rating = 0
+        self.neiro = Neiro(self.parent.neiro_params)
+
+    def update(self):
+        super().update()
+
+    def reboot(self):
+        super().reboot()
+        self.rating = 0
+
+
+class BirdCommander:
+    def __init__(self, app, count):
+        self.app = app
+        self.count = count
+        self.neiro_params = [2, 2, 1]
+
+
+class Neiro:
+    def __init__(self, arr: list[int], name=''):
+        self.name = name
+        self.arr = arr
+        self.len_arr = len(self.arr)
+        self.act_func = np.vectorize(self.le_relu)
+
+        # create weights
+        self.weight = []
+        for i in range(self.len_arr - 1):
+            buf = np.random.uniform(-1, 1, (self.arr[i + 1], self.arr[i] + 1))
+            self.weight.append(buf)
+
+        # create layers
+        self.layer = []
+        for i in range(self.len_arr - 1):
+            self.layer.append(np.ones(self.arr[i] + 1, float))
+        self.layer.append(np.ones(self.arr[-1], float))
+
+    def predict(self, arr):
+        self.layer[0][:-1] = np.array(arr, float)
+        for i in range(self.len_arr - 2):
+            res = np.dot(self.weight[i], self.layer[i])
+            res = self.act_func(res)
+            self.layer[i + 1][:-1] = res
+        res = np.dot(self.weight[-1], self.layer[-2])
+        self.layer[-1] = self.act_func(res)
+        return self.layer[-1]
+
+    @staticmethod
+    def sig(a):
+        if a < 0:
+            return -1.0
+        return -3 / (a + 1) + 2
+
+    @staticmethod
+    def zz(a):
+        res = math.sin(a)
+        return res * 3
+
+    @staticmethod
+    def le_relu(a):
+        ma = 1.0
+        mi = 0.0
+        if a < mi:
+            return a * 0.1
+        if a > ma:
+            return (a - ma) * 0.1 + ma
+        return a
+
+    @staticmethod
+    def relu(a):
+        if a < 0:
+            return 0.0
+        else:
+            return a
 
 
 class PipeCommander:
@@ -146,6 +319,22 @@ class PipeCommander:
             temp = Pipe(self, self.start_pos + i * self.dist, randint(*self.random_borders), self.gap)
             self.pipes.append(temp)
 
+    def coin(self, rect):
+        flag = False
+        for pipe in self.pipes:
+            flag = pipe.coin(rect)
+            if flag:
+                return flag
+        return flag
+
+    def check_collision(self, rect):
+        flag = False
+        for pipe in self.pipes:
+            flag = pipe.check_collision(rect)
+            if flag:
+                return flag
+        return flag
+
     def update(self):
         for pipe in self.pipes:
             pipe.move(self.app.speed)
@@ -161,6 +350,14 @@ class PipeCommander:
         for pipe in self.pipes:
             pipe.draw(sc)
 
+    def reboot(self):
+        i = 0
+        for pipe in self.pipes:
+            new_x = self.start_pos + i * self.dist
+            new_y = randint(*self.random_borders)
+            pipe.set_new_position(new_x, new_y)
+            i += 1
+
 
 class Pipe:
     def __init__(self, parent: PipeCommander, cx: int, cy: int, gap: int):
@@ -173,8 +370,17 @@ class Pipe:
 
         self.bot_rect = self.bot_image.get_rect()
         self.top_rect = self.top_image.get_rect()
+        self.coin_rect = pg.Rect(0, 0, self.top_rect.w, self.gap)
 
         self.set_new_position(cx, cy)
+
+    def check_collision(self, rect):
+        f1 = self.top_rect.colliderect(rect)
+        f2 = self.bot_rect.colliderect(rect)
+        return f1 or f2
+
+    def coin(self, rect):
+        return self.coin_rect.colliderect(rect)
 
     def set_new_position(self, cx, cy):
         x = cx - int(self.top_rect.w / 2)
@@ -184,10 +390,12 @@ class Pipe:
 
         self.bot_rect.topleft = (x, bot_y)
         self.top_rect.topleft = (x, top_y)
+        self.coin_rect.center = (cx, cy)
 
     def move(self, step):
         self.top_rect.left += step
         self.bot_rect.left += step
+        self.coin_rect.left += step
 
     @property
     def right(self):
@@ -274,6 +482,9 @@ class BG:
     def draw(self, sc: pg.Surface):
         self.bg.draw(sc)
         self.ground.draw(sc)
+
+    def reboot(self):
+        pass
 
 
 if __name__ == '__main__':
