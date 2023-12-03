@@ -31,6 +31,24 @@ class Timer:
         self.run()
 
 
+class TickTimer:
+    def __init__(self, ticks):
+        self.ticks = ticks
+        self.done = False
+        self.actual = 0
+
+    def __call__(self):
+        self.actual += 1
+        if self.actual >= self.ticks:
+            self.reboot()
+            return True
+        return self.done
+
+    def reboot(self):
+        self.actual = 0
+        self.done = False
+
+
 class App:
     def __init__(self, w: int, h: int):
         pg.init()
@@ -48,8 +66,8 @@ class App:
         # other details
         self.gravity = 1
         self.speed = -3
-        self.dist = int(self.h / 4)
-        self.gap = int(self.h / 5)
+        self.dist = int(self.h / 3.5)  # between pipes horizontal
+        self.gap = int(self.h / 5.5)  # between pipes vertical
         self.score = 0
         self.high_score = 0
         self.font = pg.font.Font(None, 32)
@@ -72,6 +90,8 @@ class App:
             for i in events:
                 if i.type == pg.QUIT:
                     self.running = False
+                if i.type == pg.MOUSEBUTTONDOWN:
+                    self.fps = 0 if self.fps else 60
 
             self.score_flag = True
 
@@ -159,7 +179,7 @@ class Bird:
         x = self.app.w // 4
         y = self.app.h // 3
         self.rect.topleft = (x, y)
-        self.jump_timer = Timer(0.1).run()
+        self.jump_timer = TickTimer(1)  # Timer(0.1).run()  # TickTimer(5)
 
         # other params
         self.borders = self.app.bird_borders
@@ -299,7 +319,7 @@ class BirdCommander:
         self.app = app
         self.pipes = self.app.pipe
         self.count = count
-        self.neiro_params = [2, 2, 1]
+        self.neiro_params = [2, 3, 1]
 
         self.birds = [NeiroBird(self.app, self) for _ in range(self.count)]
 
@@ -312,7 +332,7 @@ class BirdCommander:
     def update(self):
         # check age need
         if not self.is_alive() or self.age_timer():
-
+            self.age_timer.reboot()
             self.new_age()
             self.app.reboot()
             return
@@ -443,7 +463,6 @@ class PipeCommander:
 
     def get_pipe_info(self, rect):
         # find actual pipe
-        res = False
         temp = None
         for pipe in self.pipes:
             res = pipe.actual(rect)
